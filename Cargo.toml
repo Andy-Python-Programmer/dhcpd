@@ -1,0 +1,9 @@
+[package]
+name = "dhcpd"
+version = "0.1.0"
+edition = "2021"
+authors = ["Anhad Singh <andypython@protonmail.com>"]
+
+[dependencies]
+simple_endian = "*"
+byteorder = { version = "*", default-features = false }
