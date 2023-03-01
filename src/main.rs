@@ -22,17 +22,20 @@ impl Ipv4Addr {
 const MAC_ADDRESS: &[u8] = &[52, 54, 0, 12, 34, 56];
 const DHCP_XID: u32 = 0x43424140;
 
+#[derive(Debug, Copy, Clone)]
 #[repr(u8)]
 enum DhcpType {
     BootRequest = 1u8.swap_bytes(),
     // BootReply = 2u8.swap_bytes(),
 }
 
+#[derive(Debug, Copy, Clone)]
 #[repr(u8)]
 enum HType {
     Ethernet = 1u8.swap_bytes(),
 }
 
+#[derive(Debug, Clone)]
 #[repr(C, packed)]
 struct Header {
     op: DhcpType,
@@ -53,19 +56,62 @@ struct Header {
 }
 
 impl Header {
+    fn new(htype: HType) -> Self {
+        let mut client_hw_addr = [0; 16];
+        client_hw_addr[0..6].copy_from_slice(MAC_ADDRESS);
+
+        Self {
+            htype,
+            hlen: BigEndian::<u8>::from(6),
+            hops: BigEndian::<u8>::from(0),
+            xid: BigEndian::<u32>::from(DHCP_XID),
+            seconds: BigEndian::<u16>::from(0),
+            client_hw_addr,
+            server_name: [0; 64],
+            file: [0; 128],
+            options: [0; 64],
+
+            // request info:
+            op: DhcpType::BootRequest,
+            flags: BigEndian::from(0x8000), // broadcast
+            client_ip: Ipv4Addr::EMPTY,
+            your_ip: Ipv4Addr::EMPTY,
+            server_ip: Ipv4Addr::EMPTY,
+            gateway_ip: Ipv4Addr::EMPTY,
+        }
+    }
+
     fn options_mut(&mut self) -> OptionsWriter<'_> {
         OptionsWriter::new(&mut self.options)
+    }
+
+    fn as_slice<'a>(&'a self) -> &'a [u8] {
+        unsafe {
+            core::slice::from_raw_parts(
+                (self as *const Header) as *const u8,
+                std::mem::size_of::<Header>(),
+            )
+        }
     }
 }
 
 #[repr(u8)]
 enum MessageType {
+    /// Broadcast to locate available servers.
     Discover = 1u8.swap_bytes(),
+    /// Message to servers to either:
+    /// 1. Request the offered parameters from one server and implicitly
+    ///    declining offers from all others.
+    /// 2. Confirm correctness of previously allocated address after,
+    ///    (e.g., system reboot).
+    /// 3. Extend the lease on a particular network address.
+    Request = 3u8.swap_bytes(),
 }
 
 #[repr(u8)]
 enum DhcpOption {
     HostName = 12,
+    RequestedIp = 50,
     MessageType = 53,
     ParameterRequestList = 55,
     ClientIdentifier = 61,
@@ -146,6 +192,11 @@ impl<'a> OptionsWriter<'a> {
         self.insert_padding(1); // null-terminator
         self
     }
+
+    fn set_requested_ip(mut self, ip: Ipv4Addr) -> Self {
+        self.insert(DhcpOption::RequestedIp, &ip.0);
+        self
+    }
 }
 
 impl<'a> Drop for OptionsWriter<'a> {
@@ -158,43 +209,33 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(("0.0.0.0", 68))?;
     socket.connect(("255.255.255.255", 67))?;
 
-    let mut client_hw_addr = [0; 16];
-    client_hw_addr[0..6].copy_from_slice(MAC_ADDRESS);
-
-    let mut header = Header {
-        htype: HType::Ethernet,
-        hlen: BigEndian::<u8>::from(6),
-        hops: BigEndian::<u8>::from(0),
-        xid: BigEndian::<u32>::from(DHCP_XID),
-        seconds: BigEndian::<u16>::from(0),
-        client_hw_addr,
-        server_name: [0; 64],
-        file: [0; 128],
-        options: [0; 64],
-
-        // request info:
-        op: DhcpType::BootRequest,
-        flags: BigEndian::from(0x8000), // broadcast
-        client_ip: Ipv4Addr::EMPTY,
-        your_ip: Ipv4Addr::EMPTY,
-        server_ip: Ipv4Addr::EMPTY,
-        gateway_ip: Ipv4Addr::EMPTY,
-    };
-
-    let _ = header
+    let mut discover_header = Header::new(HType::Ethernet);
+    discover_header
         .options_mut()
         .set_message_type(MessageType::Discover)
         .set_client_identifier()
         .set_host_name("Aero")
         .set_parameter_request_list();
 
-    let header_bytes = unsafe {
-        core::slice::from_raw_parts(
-            (&header as *const Header) as *const u8,
-            std::mem::size_of::<Header>(),
-        )
-    };
+    socket.send(discover_header.as_slice())?;
 
-    socket.send(&header_bytes)?;
+    let mut offer_bytes = [0u8; core::mem::size_of::<Header>()];
+    socket.recv(&mut offer_bytes)?;
+
+    // SAFETY: The array has the same size as of the DHCP header.
+    let offer = unsafe { &*(offer_bytes.as_ptr() as *const Header) };
+    println!("dhcpd: recieved offer {:?}", offer.your_ip);
+
+    let mut request_header = Header::new(HType::Ethernet);
+    request_header
+        .options_mut()
+        .set_message_type(MessageType::Request)
+        .set_client_identifier()
+        .set_requested_ip(offer.your_ip)
+        .set_host_name("Aero")
+        .set_parameter_request_list();
+
+    socket.send(request_header.as_slice())?;
+
     Ok(())
 }
