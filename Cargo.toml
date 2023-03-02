@@ -7,3 +7,6 @@ authors = ["Anhad Singh <andypython@protonmail.com>"]
 [dependencies]
 simple_endian = "*"
 byteorder = { version = "*", default-features = false }
+num-derive = { version = "0.3", default-features = false }
+num-traits = { version = "0.2", default-features = false }
+libc = "0.2.139"
