@@ -5,7 +5,8 @@ extern crate num_derive;
 
 use num_traits::FromPrimitive;
 
-use std::{error::Error, fmt::Display, net::UdpSocket};
+use spin::Once;
+use std::{error::Error, fmt::Display, io, net::UdpSocket};
 
 use byteorder::{ByteOrder, NetworkEndian};
 use simple_endian::BigEndian;
@@ -33,9 +34,6 @@ impl Display for Ipv4Addr {
     }
 }
 
-// FIXME: The MAC address is usually obtained by using getifaddrs() which currently
-//        is unimplemented in mlibc.
-const MAC_ADDRESS: &[u8] = &[52, 54, 0, 12, 34, 56];
 const DHCP_XID: u32 = 0x43424140;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -74,7 +72,7 @@ struct Header {
 impl Header {
     fn new(htype: HType) -> Self {
         let mut client_hw_addr = [0; 16];
-        client_hw_addr[0..6].copy_from_slice(MAC_ADDRESS);
+        client_hw_addr[0..6].copy_from_slice(get_macaddress());
 
         Self {
             htype,
@@ -328,7 +326,7 @@ impl<'a> OptionsWriter<'a> {
     fn set_client_identifier(mut self) -> Self {
         let mut data = [0; 7];
         data[0] = HType::Ethernet as u8;
-        data[1..].copy_from_slice(MAC_ADDRESS);
+        data[1..].copy_from_slice(get_macaddress());
 
         self.insert(OptionKind::ClientIdentifier, data.as_slice());
         self
@@ -350,6 +348,29 @@ impl<'a> Drop for OptionsWriter<'a> {
     fn drop(&mut self) {
         self.insert(OptionKind::End, &[]);
     }
+}
+
+pub fn cvt(t: i32) -> io::Result<i32> {
+    if t == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(t)
+    }
+}
+
+fn get_macaddress<'a>() -> &'a [u8; 6] {
+    static CACHED: Once<[u8; 6]> = Once::new();
+    CACHED
+        .try_call_once(|| unsafe {
+            let fd = cvt(libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0))?;
+
+            let mut buffer = [0u8; 6];
+            cvt(libc::ioctl(fd, libc::SIOCGIFHWADDR, buffer.as_mut_ptr()))?;
+
+            Ok::<[u8; 6], io::Error>(buffer)
+        })
+        // FIXME: Should we panic here?
+        .expect("[ DHCPD ] (EE) failed to retrieve the mac address")
 }
 
 pub fn main() -> Result<(), Box<dyn Error>> {
