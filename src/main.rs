@@ -21,6 +21,10 @@ pub struct Ipv4Addr(pub [u8; ADDR_SIZE]);
 
 impl Ipv4Addr {
     const EMPTY: Self = Self([0; ADDR_SIZE]);
+
+    fn as_u32(&self) -> u32 {
+        byteorder::BigEndian::read_u32(&self.0)
+    }
 }
 
 impl Display for Ipv4Addr {
@@ -373,6 +377,43 @@ fn get_macaddress<'a>() -> &'a [u8; 6] {
         .expect("[ DHCPD ] (EE) failed to retrieve the mac address")
 }
 
+fn configure(interface: &str, ip: Ipv4Addr) -> io::Result<()> {
+    let fd = cvt(unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) })?;
+    let socket = libc::sockaddr_in {
+        sin_family: libc::AF_INET as _,
+        sin_addr: libc::in_addr {
+            s_addr: ip.as_u32(),
+        },
+
+        sin_port: 0,
+        sin_zero: [0; 8],
+    };
+
+    let mut ifr: libc::ifreq = unsafe { core::mem::zeroed() };
+    assert!(interface.len() <= libc::IFNAMSIZ);
+
+    // SAFETY: We have verified above that the name will fit
+    //         in the buffer.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            interface.as_ptr(),
+            ifr.ifr_name.as_mut_ptr() as *mut u8,
+            interface.len(),
+        );
+    }
+
+    ifr.ifr_ifru.ifru_addr = unsafe { *(&socket as *const _ as *const libc::sockaddr) };
+
+    // Set the interface address.
+    unsafe {
+        cvt(libc::ioctl(fd, libc::SIOCSIFADDR, &ifr))?;
+    }
+
+    Ok(())
+}
+
+const DEFAULT_NIC: &str = "eth0"; // FIXME: retrieve the default NIC from the kernel
+
 pub fn main() -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(("0.0.0.0", 68))?;
     socket.connect(("255.255.255.255", 67))?;
@@ -424,6 +465,8 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let default_gateway = default_gateway.unwrap();
     let subnet_mask = subnet_mask.unwrap();
     let dns = dns.unwrap();
+
+    configure(DEFAULT_NIC, ack.your_ip)?;
 
     println!("[ DHCPD ] (!!) Configured:");
     println!("[ DHCPD ] (!!) IP:              {}", ack.your_ip);
