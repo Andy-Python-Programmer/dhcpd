@@ -27,6 +27,12 @@ impl Ipv4Addr {
     }
 }
 
+impl From<libc::in_addr> for Ipv4Addr {
+    fn from(value: libc::in_addr) -> Self {
+        Self(value.s_addr.to_be_bytes())
+    }
+}
+
 impl Display for Ipv4Addr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!(
@@ -368,46 +374,93 @@ fn get_macaddress<'a>() -> &'a [u8; 6] {
         .try_call_once(|| unsafe {
             let fd = cvt(libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0))?;
 
-            let mut buffer = [0u8; 6];
-            cvt(libc::ioctl(fd, libc::SIOCGIFHWADDR, buffer.as_mut_ptr()))?;
+            let macaddr = IfReq::new(DEFAULT_NIC);
+            cvt(libc::ioctl(fd, libc::SIOCGIFHWADDR, &macaddr))?;
 
-            Ok::<[u8; 6], io::Error>(buffer)
+            Ok::<[u8; 6], io::Error>(macaddr.macaddr())
         })
         // FIXME: Should we panic here?
         .expect("[ DHCPD ] (EE) failed to retrieve the mac address")
 }
 
-fn configure(interface: &str, ip: Ipv4Addr) -> io::Result<()> {
-    let fd = cvt(unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) })?;
-    let socket = libc::sockaddr_in {
-        sin_family: libc::AF_INET as _,
-        sin_addr: libc::in_addr {
-            s_addr: ip.as_u32(),
-        },
+struct SockAddrIn(libc::sockaddr_in);
 
-        sin_port: 0,
-        sin_zero: [0; 8],
-    };
+impl SockAddrIn {
+    pub fn new(addr: Ipv4Addr) -> Self {
+        let sin_addr = libc::in_addr {
+            s_addr: addr.as_u32(),
+        };
 
-    let mut ifr: libc::ifreq = unsafe { core::mem::zeroed() };
-    assert!(interface.len() <= libc::IFNAMSIZ);
+        Self(libc::sockaddr_in {
+            sin_family: libc::AF_INET as _,
+            sin_addr,
 
-    // SAFETY: We have verified above that the name will fit
-    //         in the buffer.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            interface.as_ptr(),
-            ifr.ifr_name.as_mut_ptr() as *mut u8,
-            interface.len(),
-        );
+            ..unsafe { core::mem::zeroed() }
+        })
+    }
+}
+
+impl Into<libc::sockaddr> for SockAddrIn {
+    fn into(self) -> libc::sockaddr {
+        unsafe { core::mem::transmute_copy(&self.0) }
+    }
+}
+
+struct IfReq(libc::ifreq);
+
+impl IfReq {
+    pub fn new(interface: &str) -> Self {
+        let mut ifr: libc::ifreq = unsafe { core::mem::zeroed() };
+        assert!(interface.len() <= libc::IFNAMSIZ);
+
+        // SAFETY: We have verified above that the name will fit
+        //         in the buffer.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                interface.as_ptr(),
+                ifr.ifr_name.as_mut_ptr() as *mut u8,
+                interface.len(),
+            );
+        }
+
+        Self(ifr)
     }
 
-    ifr.ifr_ifru.ifru_addr = unsafe { *(&socket as *const _ as *const libc::sockaddr) };
+    fn set_addr(mut self, ip: Ipv4Addr) -> libc::ifreq {
+        self.0.ifr_ifru.ifru_addr = SockAddrIn::new(ip).into();
+        self.0
+    }
+
+    unsafe fn macaddr(&self) -> [u8; 6] {
+        let data: &[i8; 6] = &self.0.ifr_ifru.ifru_hwaddr.sa_data[..6]
+            .try_into()
+            .expect("macaddr: address validation failed");
+
+        let data: [i8; 6] = data.clone();
+
+        // SAFETY: The caller guarantees that union field we are accessing
+        //         has been initialized with a mac address. With all of that,
+        //         transmuting the data array into [u8; 6] is safe.
+        core::mem::transmute(data)
+    }
+}
+
+fn configure(interface: &str, ip: Ipv4Addr, subnet_mask: Ipv4Addr) -> io::Result<()> {
+    let fd = cvt(unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) })?;
+
+    let interface_addr = IfReq::new(interface).set_addr(ip);
 
     // Set the interface address.
     unsafe {
-        cvt(libc::ioctl(fd, libc::SIOCSIFADDR, &ifr))?;
+        cvt(libc::ioctl(fd, libc::SIOCSIFADDR, &interface_addr))?;
     }
+
+    let subnet_mask = IfReq::new(interface).set_addr(subnet_mask);
+
+    // Set the subnet mask.
+    // unsafe {
+    //     cvt(libc::ioctl(fd, libc::SIOCSIFNETMASK, &subnet_mask))?;
+    // }
 
     Ok(())
 }
@@ -466,7 +519,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let subnet_mask = subnet_mask.unwrap();
     let dns = dns.unwrap();
 
-    configure(DEFAULT_NIC, ack.your_ip)?;
+    configure(DEFAULT_NIC, ack.your_ip, subnet_mask)?;
 
     println!("[ DHCPD ] (!!) Configured:");
     println!("[ DHCPD ] (!!) IP:              {}", ack.your_ip);
