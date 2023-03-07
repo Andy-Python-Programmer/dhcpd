@@ -472,7 +472,6 @@ const DEFAULT_NIC: &str = "eth0"; // FIXME: retrieve the default NIC from the ke
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(("0.0.0.0", DHCP_CLIENT_PORT))?;
-    socket.connect(("255.255.255.255", 67))?;
 
     let mut discover_header = Header::new(HType::Ethernet);
     discover_header
@@ -482,7 +481,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         .set_host_name("Aero")
         .set_parameter_request_list();
 
-    socket.send(discover_header.as_slice())?;
+    socket.send_to(discover_header.as_slice(), "255.255.255.255:67")?;
 
     let mut offer = Header::new(HType::Ethernet);
     socket.recv(offer.as_slice_mut())?;
@@ -498,7 +497,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         .set_host_name("Aero")
         .set_parameter_request_list();
 
-    socket.send(request_header.as_slice())?;
+    socket.send_to(request_header.as_slice(), "255.255.255.255:67")?;
 
     let mut ack = Header::new(HType::Ethernet);
     socket.recv(ack.as_slice_mut())?;
