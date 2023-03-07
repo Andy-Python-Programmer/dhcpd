@@ -370,13 +370,26 @@ pub fn cvt(t: i32) -> io::Result<i32> {
     }
 }
 
+fn get_nicname<'a>() -> &'a str {
+    static CACHED: Once<String> = Once::new();
+
+    CACHED.call_once(|| {
+        let nic_name = std::env::args().nth(1).unwrap_or(DEFAULT_NIC.to_string());
+
+        get_index(&nic_name)
+            .unwrap_or_else(|nic_name| panic!("[ DHCPD ] (EE) invalid NIC name {}", nic_name));
+
+        nic_name
+    })
+}
+
 fn get_macaddress<'a>() -> &'a [u8; 6] {
     static CACHED: Once<[u8; 6]> = Once::new();
     CACHED
         .try_call_once(|| unsafe {
             let fd = cvt(libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0))?;
 
-            let macaddr = IfReq::new(DEFAULT_NIC);
+            let macaddr = IfReq::new(get_nicname());
             cvt(libc::ioctl(fd, libc::SIOCGIFHWADDR, &macaddr))?;
 
             Ok::<[u8; 6], io::Error>(macaddr.macaddr())
@@ -469,6 +482,14 @@ fn configure(interface: &str, ip: Ipv4Addr, subnet_mask: Ipv4Addr) -> io::Result
 
 const DEFAULT_NIC: &str = "eth0"; // FIXME: retrieve the default NIC from the kernel
 
+fn get_index(nic: &str) -> io::Result<libc::c_uint> {
+    let ifname = std::ffi::CString::new(nic)?;
+    match unsafe { libc::if_nametoindex(ifname.as_ptr()) } {
+        0 => Err(io::Error::last_os_error()),
+        index => Ok(index),
+    }
+}
+
 pub fn main() -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(("0.0.0.0", DHCP_CLIENT_PORT))?;
 
@@ -520,7 +541,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let subnet_mask = subnet_mask.unwrap();
     let dns = dns.unwrap();
 
-    configure(DEFAULT_NIC, ack.your_ip, subnet_mask)?;
+    configure(get_nicname(), ack.your_ip, subnet_mask)?;
 
     println!("[ DHCPD ] (!!) Configured:");
     println!("[ DHCPD ] (!!) IP:              {}", ack.your_ip);
