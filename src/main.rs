@@ -16,6 +16,9 @@ use simple_endian::BigEndian;
 /// [RFC 8200 § 2]: https://www.rfc-editor.org/rfc/rfc791#section-3.2
 pub const ADDR_SIZE: usize = 4;
 
+pub const DHCP_SERVER_PORT: u16 = 67;
+pub const DHCP_CLIENT_PORT: u16 = 68;
+
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 pub struct Ipv4Addr(pub [u8; ADDR_SIZE]);
 
@@ -468,7 +471,7 @@ fn configure(interface: &str, ip: Ipv4Addr, subnet_mask: Ipv4Addr) -> io::Result
 const DEFAULT_NIC: &str = "eth0"; // FIXME: retrieve the default NIC from the kernel
 
 pub fn main() -> Result<(), Box<dyn Error>> {
-    let socket = UdpSocket::bind(("0.0.0.0", 68))?;
+    let socket = UdpSocket::bind(("0.0.0.0", DHCP_CLIENT_PORT))?;
     socket.connect(("255.255.255.255", 67))?;
 
     let mut discover_header = Header::new(HType::Ethernet);
