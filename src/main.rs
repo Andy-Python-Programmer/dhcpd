@@ -62,7 +62,6 @@ enum HType {
     Ethernet = 1u8.swap_bytes(),
 }
 
-#[derive(Debug, Clone)]
 #[repr(C, packed)]
 struct Header {
     op: DhcpType,
