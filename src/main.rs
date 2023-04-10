@@ -473,9 +473,9 @@ fn configure(interface: &str, ip: Ipv4Addr, subnet_mask: Ipv4Addr) -> io::Result
     let subnet_mask = IfReq::new(interface).set_addr(subnet_mask);
 
     // Set the subnet mask.
-    // unsafe {
-    //     cvt(libc::ioctl(fd, libc::SIOCSIFNETMASK, &subnet_mask))?;
-    // }
+    unsafe {
+        cvt(libc::ioctl(fd, libc::SIOCSIFNETMASK, &subnet_mask))?;
+    }
 
     Ok(())
 }
